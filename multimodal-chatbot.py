@@ -7,28 +7,37 @@ import pandas as pd
 from typing import List, Union, Tuple
 from PIL import Image
 import torch
-from transformers import CLIPImageProcessor, CLIPModel
+from transformers import CLIPProcessor, CLIPModel, CLIPTokenizer, CLIPImageProcessor
 import faiss
 
 class MultimodalSearchEngine:
     def __init__(self):
-        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-        self.clip_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        model_name = "openai/clip-vit-base-patch32"
+        self.clip_model = CLIPModel.from_pretrained(model_name)
+        self.clip_processor = CLIPProcessor.from_pretrained(model_name)
+        self.clip_tokenizer = CLIPTokenizer.from_pretrained(model_name)
+        self.clip_image_processor = CLIPImageProcessor.from_pretrained(model_name)
         self.text_index = None
         self.image_index = None
         self.metadata_df = None
         
     def process_image(self, image: Image) -> np.ndarray:
         """Process image and get CLIP embedding"""
-        inputs = self.clip_processor(images=image, return_tensors="pt")
+        inputs = self.clip_image_processor(images=image, return_tensors="pt")
         image_features = self.clip_model.get_image_features(**inputs)
-        return image_features.detach().numpy()
+        return image_features.detach().numpy().reshape(1, 512)
     
     def process_text(self, text: str) -> np.ndarray:
         """Process text and get CLIP embedding"""
-        inputs = self.clip_processor(text=[text], return_tensors="pt", padding=True)
+        inputs = self.clip_tokenizer(
+            text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=77
+        )
         text_features = self.clip_model.get_text_features(**inputs)
-        return text_features.detach().numpy()
+        return text_features.detach().numpy().reshape(1, 512)
 
     def load_embeddings(self, text_path: str, image_path: str, metadata_path: str):
         """Load text and image embeddings and metadata from CSV"""
@@ -36,45 +45,32 @@ class MultimodalSearchEngine:
             # Load text embeddings
             with open(text_path, 'rb') as f:
                 text_embeddings = pickle.load(f)
-                if not isinstance(text_embeddings, np.ndarray):
-                    raise TypeError(f"Text embeddings must be numpy array, got {type(text_embeddings)}")
+                # Convert list of arrays to single array
+                if isinstance(text_embeddings, list):
+                    text_embeddings = np.vstack([emb.reshape(-1, 512) for emb in text_embeddings])
                 
-                # Ensure 2D array
-                if text_embeddings.ndim == 1:
-                    text_embeddings = np.expand_dims(text_embeddings, axis=0)
-                elif text_embeddings.ndim > 2:
-                    text_embeddings = text_embeddings.reshape(text_embeddings.shape[0], -1)
-                
-                # Create FAISS index
-                dim = text_embeddings.shape[1]
-                self.text_index = faiss.IndexFlatIP(dim)
+                # Create FAISS index for text embeddings
+                self.text_index = faiss.IndexFlatIP(text_embeddings.shape[1])
                 self.text_index.add(text_embeddings.astype(np.float32))
+                
+                st.write(f"Loaded text embeddings with shape: {text_embeddings.shape}")
             
             # Load image embeddings
             with open(image_path, 'rb') as f:
                 image_embeddings = pickle.load(f)
-                if not isinstance(image_embeddings, np.ndarray):
-                    raise TypeError(f"Image embeddings must be numpy array, got {type(image_embeddings)}")
+                # Convert list of arrays to single array
+                if isinstance(image_embeddings, list):
+                    image_embeddings = np.vstack([emb.reshape(-1, 512) for emb in image_embeddings])
                 
-                # Ensure 2D array
-                if image_embeddings.ndim == 1:
-                    image_embeddings = np.expand_dims(image_embeddings, axis=0)
-                elif image_embeddings.ndim > 2:
-                    image_embeddings = image_embeddings.reshape(image_embeddings.shape[0], -1)
-                
-                # Create FAISS index
-                dim = image_embeddings.shape[1]
-                self.image_index = faiss.IndexFlatIP(dim)
+                # Create FAISS index for image embeddings
+                self.image_index = faiss.IndexFlatIP(image_embeddings.shape[1])
                 self.image_index.add(image_embeddings.astype(np.float32))
+                
+                st.write(f"Loaded image embeddings with shape: {image_embeddings.shape}")
             
             # Load metadata CSV
             self.metadata_df = pd.read_csv(metadata_path)
-            
-            # Print debug information
-            st.write("Debug Information:")
-            st.write(f"Text embeddings shape: {text_embeddings.shape}")
-            st.write(f"Image embeddings shape: {image_embeddings.shape}")
-            st.write(f"Metadata length: {len(self.metadata_df)}")
+            st.write(f"Loaded metadata with {len(self.metadata_df)} entries")
             
             # Verify dimensions match
             if len(self.metadata_df) != text_embeddings.shape[0]:
@@ -84,21 +80,8 @@ class MultimodalSearchEngine:
             
         except Exception as e:
             st.error(f"Error loading data: {str(e)}")
-            if 'text_embeddings' in locals():
-                st.write("Text embeddings info:")
-                st.write(f"Type: {type(text_embeddings)}")
-                if isinstance(text_embeddings, np.ndarray):
-                    st.write(f"Shape: {text_embeddings.shape}")
-                    st.write(f"DTtype: {text_embeddings.dtype}")
-            if 'image_embeddings' in locals():
-                st.write("Image embeddings info:")
-                st.write(f"Type: {type(image_embeddings)}")
-                if isinstance(image_embeddings, np.ndarray):
-                    st.write(f"Shape: {image_embeddings.shape}")
-                    st.write(f"DTtype: {image_embeddings.dtype}")
             raise
 
-    
     def search(self, query_embedding: np.ndarray, k: int = 3, mode: str = 'text') -> List[dict]:
         """Search for similar items using either text or image index"""
         # Normalize query embedding
@@ -114,7 +97,7 @@ class MultimodalSearchEngine:
         # Get results with metadata
         results = []
         for dist, idx in zip(distances[0], indices[0]):
-            if idx != -1:
+            if idx != -1 and idx < len(self.metadata_df):
                 metadata_dict = self.metadata_df.iloc[idx].to_dict()
                 results.append({
                     'index': idx,
@@ -252,70 +235,92 @@ else:
             if "image" in message:
                 st.image(message["image"])
 
-    # Query input
-    text_query = st.text_input("Ask about products:")
-    uploaded_image = st.file_uploader("Or upload an image:", type=['png', 'jpg', 'jpeg'])
+    # Query input with form
+    with st.form(key='query_form'):
+        text_query = st.text_input("Ask about products or describe what you're looking for:")
+        uploaded_image = st.file_uploader("Optionally upload an image:", type=['png', 'jpg', 'jpeg'])
+        submit_button = st.form_submit_button("Send Query")
     
-    if text_query or uploaded_image:
-        # Process query
-        if text_query:
-            query = text_query
-            query_embedding = st.session_state.search_engine.process_text(text_query)
-            search_mode = 'text'
+    if submit_button:
+        if not text_query and not uploaded_image:
+            st.warning("Please enter a text query or upload an image.")
         else:
-            query = "Find products similar to the uploaded image"
-            image = Image.open(uploaded_image)
-            query_embedding = st.session_state.search_engine.process_image(image)
-            search_mode = 'image'
-        
-        # Add user message
-        user_message = {"role": "user", "content": query}
-        if uploaded_image:
-            user_message["image"] = uploaded_image
-        st.session_state.messages.append(user_message)
-        
-        with st.chat_message("user"):
-            st.write(user_message["content"])
-            if "image" in user_message:
-                st.image(user_message["image"])
+            with st.spinner("Processing your query..."):
+                # Initialize query variables
+                query_embedding = None
+                search_mode = 'text'  # default mode
+                
+                # Process based on input type
+                if uploaded_image:
+                    # If both text and image are provided
+                    if text_query:
+                        query = text_query
+                    else:
+                        query = "Find products similar to the uploaded image"
+                    
+                    # Process image for search
+                    image = Image.open(uploaded_image)
+                    query_embedding = st.session_state.search_engine.process_image(image)
+                    search_mode = 'image'
+                else:
+                    # Text-only query
+                    query = text_query
+                    query_embedding = st.session_state.search_engine.process_text(text_query)
+                
+                # Add user message
+                user_message = {"role": "user", "content": query}
+                if uploaded_image:
+                    user_message["image"] = uploaded_image
+                st.session_state.messages.append(user_message)
+                
+                with st.chat_message("user"):
+                    st.write(user_message["content"])
+                    if "image" in user_message:
+                        st.image(user_message["image"])
 
-        # Generate response
-        with st.chat_message("assistant"):
-            try:
-                # Get relevant products
-                results = st.session_state.search_engine.search(
-                    query_embedding, 
-                    k=3, 
-                    mode=search_mode
-                )
-                context = format_results(results)
-                
-                # Create message with context and query
-                prompt = PROMPT_TEMPLATE.format(
-                    context=context,
-                    query=query
-                )
-                
-                # Get response from ChatGPT
-                chat = ChatOpenAI(
-                    model_name="gpt-3.5-turbo",
-                    temperature=0
-                )
-                
-                response = chat.predict(prompt)
-                st.write(response)
-                
-                # Display retrieved products
-                st.subheader("Retrieved Products")
-                display_product_results(results)
-                
-                # Save assistant response
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": response}
-                )
-                
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
+                # Generate response
+                with st.chat_message("assistant"):
+                    try:
+                        # Get relevant products
+                        results = st.session_state.search_engine.search(
+                            query_embedding, 
+                            k=3, 
+                            mode=search_mode
+                        )
+                        
+                        if not results:
+                            st.warning("No relevant products found. Try modifying your query.")
+                            return
+                            
+                        context = format_results(results)
+                        
+                        # Create message with context and query
+                        prompt = PROMPT_TEMPLATE.format(
+                            context=context,
+                            query=query
+                        )
+                        
+                        # Get response from GPT-4
+                        chat = ChatOpenAI(
+                            model_name="gpt-4",
+                            temperature=0
+                        )
+                        
+                        response = chat.predict(prompt)
+                        st.write(response)
+                        
+                        # Display retrieved products
+                        st.subheader("Retrieved Products")
+                        display_product_results(results)
+                        
+                        # Save assistant response
+                        st.session_state.messages.append(
+                            {"role": "assistant", "content": response}
+                        )
+                        
+                    except Exception as e:
+                        st.error(f"Error processing query: {str(e)}")
+                        st.error("Please try again with a different query or image.")
 
     # Sidebar controls
     with st.sidebar:
