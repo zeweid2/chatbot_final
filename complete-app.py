@@ -226,70 +226,76 @@ else:
             if "image" in message:
                 st.image(message["image"])
 
-    # Query input
-    text_query = st.text_input("Ask about products:")
-    uploaded_image = st.file_uploader("Or upload an image:", type=['png', 'jpg', 'jpeg'])
+    # Query input with form
+    with st.form(key='query_form'):
+        text_query = st.text_input("Ask about products:")
+        uploaded_image = st.file_uploader("Or upload an image:", type=['png', 'jpg', 'jpeg'])
+        submit_button = st.form_submit_button("Send Query")
     
-    if text_query or uploaded_image:
-        # Process query
-        if text_query:
-            query = text_query
-            query_embedding = st.session_state.search_engine.process_text(text_query)
-            search_mode = 'text'
+    if submit_button:
+        if not (text_query or uploaded_image):
+            st.warning("Please enter a text query or upload an image.")
         else:
-            query = "Find products similar to the uploaded image"
-            image = Image.open(uploaded_image)
-            query_embedding = st.session_state.search_engine.process_image(image)
-            search_mode = 'image'
-        
-        # Add user message
-        user_message = {"role": "user", "content": query}
-        if uploaded_image:
-            user_message["image"] = uploaded_image
-        st.session_state.messages.append(user_message)
-        
-        with st.chat_message("user"):
-            st.write(user_message["content"])
-            if "image" in user_message:
-                st.image(user_message["image"])
+            with st.spinner("Processing your query..."):
+                # Process query
+                if text_query:
+                    query = text_query
+                    query_embedding = st.session_state.search_engine.process_text(text_query)
+                    search_mode = 'text'
+                else:
+                    query = "Find products similar to the uploaded image"
+                    image = Image.open(uploaded_image)
+                    query_embedding = st.session_state.search_engine.process_image(image)
+                    search_mode = 'image'
+                
+                # Add user message
+                user_message = {"role": "user", "content": query}
+                if uploaded_image:
+                    user_message["image"] = uploaded_image
+                st.session_state.messages.append(user_message)
+                
+                with st.chat_message("user"):
+                    st.write(user_message["content"])
+                    if "image" in user_message:
+                        st.image(user_message["image"])
 
-        # Generate response
-        with st.chat_message("assistant"):
-            try:
-                # Get relevant products
-                results = st.session_state.search_engine.search(
-                    query_embedding, 
-                    k=3, 
-                    mode=search_mode
-                )
-                context = format_results(results)
-                
-                # Create message with context and query
-                prompt = PROMPT_TEMPLATE.format(
-                    context=context,
-                    query=query
-                )
-                
-                # Get response from ChatGPT
-                chat = ChatOpenAI(
-                    model_name="gpt-3.5-turbo",
-                    temperature=0
-                )
-                
-                response = chat.predict(prompt)
-                st.write(response)
-                
-                # Display retrieved products
-                st.subheader("Retrieved Products")
-                display_product_results(results)
-                
-                # Save assistant response
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": response}
-                )
-                
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
+                # Generate response
+                with st.chat_message("assistant"):
+                    try:
+                        # Get relevant products
+                        results = st.session_state.search_engine.search(
+                            query_embedding, 
+                            k=3, 
+                            mode=search_mode
+                        )
+                        context = format_results(results)
+                        
+                        # Create message with context and query
+                        prompt = PROMPT_TEMPLATE.format(
+                            context=context,
+                            query=query
+                        )
+                        
+                        # Get response from GPT-4
+                        chat = ChatOpenAI(
+                            model_name="gpt-4",
+                            temperature=0
+                        )
+                        
+                        response = chat.predict(prompt)
+                        st.write(response)
+                        
+                        # Display retrieved products
+                        st.subheader("Retrieved Products")
+                        display_product_results(results)
+                        
+                        # Save assistant response
+                        st.session_state.messages.append(
+                            {"role": "assistant", "content": response}
+                        )
+                        
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
 
     # Sidebar controls
     with st.sidebar:
