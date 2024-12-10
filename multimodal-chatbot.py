@@ -288,36 +288,35 @@ else:
                             mode=search_mode
                         )
                         
-                        if not results:
-                            st.warning("No relevant products found. Try modifying your query.")
-                            return
+                        if results:
+                            context = format_results(results)
                             
-                        context = format_results(results)
-                        
-                        # Create message with context and query
-                        prompt = PROMPT_TEMPLATE.format(
-                            context=context,
-                            query=query
-                        )
-                        
-                        # Get response from GPT-4
-                        chat = ChatOpenAI(
-                            model_name="gpt-4",
-                            temperature=0
-                        )
-                        
-                        response = chat.predict(prompt)
-                        st.write(response)
-                        
-                        # Display retrieved products
-                        st.subheader("Retrieved Products")
-                        display_product_results(results)
-                        
-                        # Save assistant response
-                        st.session_state.messages.append(
-                            {"role": "assistant", "content": response}
-                        )
-                        
+                            # Create message with context and query
+                            prompt = PROMPT_TEMPLATE.format(
+                                context=context,
+                                query=query
+                            )
+                            
+                            # Get response from GPT-4
+                            chat = ChatOpenAI(
+                                model_name="gpt-4",
+                                temperature=0
+                            )
+                            
+                            response = chat.predict(prompt)
+                            st.write(response)
+                            
+                            # Display retrieved products
+                            st.subheader("Retrieved Products")
+                            display_product_results(results)
+                            
+                            # Save assistant response
+                            st.session_state.messages.append(
+                                {"role": "assistant", "content": response}
+                            )
+                        else:
+                            st.warning("No relevant products found. Try modifying your query.")
+                            
                     except Exception as e:
                         st.error(f"Error processing query: {str(e)}")
                         st.error("Please try again with a different query or image.")
