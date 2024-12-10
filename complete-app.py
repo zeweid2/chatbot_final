@@ -7,13 +7,13 @@ import pandas as pd
 from typing import List, Union, Tuple
 from PIL import Image
 import torch
-from transformers import CLIPProcessor, CLIPModel
+from transformers import CLIPImageProcessor, CLIPModel
 import faiss
 
 class MultimodalSearchEngine:
     def __init__(self):
         self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        self.clip_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
         self.text_index = None
         self.image_index = None
         self.metadata_df = None
@@ -22,13 +22,13 @@ class MultimodalSearchEngine:
         """Process image and get CLIP embedding"""
         inputs = self.clip_processor(images=image, return_tensors="pt")
         image_features = self.clip_model.get_image_features(**inputs)
-        return image_features.detach().numpy()
+        return image_features.detach().numpy().reshape(1, 512)
     
     def process_text(self, text: str) -> np.ndarray:
         """Process text and get CLIP embedding"""
-        inputs = self.clip_processor(text=text, return_tensors="pt", padding=True)
+        inputs = self.clip_processor(text=[text], return_tensors="pt", padding=True)
         text_features = self.clip_model.get_text_features(**inputs)
-        return text_features.detach().numpy()
+        return text_features.detach().numpy().reshape(1, 512)
 
     def load_embeddings(self, text_path: str, image_path: str, metadata_path: str):
         """Load text and image embeddings and metadata from CSV"""
@@ -36,24 +36,42 @@ class MultimodalSearchEngine:
             # Load text embeddings
             with open(text_path, 'rb') as f:
                 text_embeddings = pickle.load(f)
+                # Convert list of arrays to single array
+                if isinstance(text_embeddings, list):
+                    text_embeddings = np.vstack([emb.reshape(-1, 512) for emb in text_embeddings])
+                
+                # Create FAISS index for text embeddings
                 self.text_index = faiss.IndexFlatIP(text_embeddings.shape[1])
                 self.text_index.add(text_embeddings.astype(np.float32))
+                
+                st.write(f"Loaded text embeddings with shape: {text_embeddings.shape}")
             
             # Load image embeddings
             with open(image_path, 'rb') as f:
                 image_embeddings = pickle.load(f)
+                # Convert list of arrays to single array
+                if isinstance(image_embeddings, list):
+                    image_embeddings = np.vstack([emb.reshape(-1, 512) for emb in image_embeddings])
+                
+                # Create FAISS index for image embeddings
                 self.image_index = faiss.IndexFlatIP(image_embeddings.shape[1])
                 self.image_index.add(image_embeddings.astype(np.float32))
+                
+                st.write(f"Loaded image embeddings with shape: {image_embeddings.shape}")
             
             # Load metadata CSV
             self.metadata_df = pd.read_csv(metadata_path)
+            st.write(f"Loaded metadata with {len(self.metadata_df)} entries")
             
-            # Verify that we have metadata for all embeddings
+            # Verify dimensions match
             if len(self.metadata_df) != text_embeddings.shape[0]:
-                raise ValueError(f"Mismatch between embeddings ({text_embeddings.shape[0]}) and metadata ({len(self.metadata_df)}) length")
-                
+                st.warning(f"Warning: Mismatch between embeddings ({text_embeddings.shape[0]}) and metadata ({len(self.metadata_df)}) length")
+            
+            return True
+            
         except Exception as e:
-            raise Exception(f"Error loading data: {str(e)}")
+            st.error(f"Error loading data: {str(e)}")
+            raise
 
     def search(self, query_embedding: np.ndarray, k: int = 3, mode: str = 'text') -> List[dict]:
         """Search for similar items using either text or image index"""
@@ -70,7 +88,7 @@ class MultimodalSearchEngine:
         # Get results with metadata
         results = []
         for dist, idx in zip(distances[0], indices[0]):
-            if idx != -1:
+            if idx != -1 and idx < len(self.metadata_df):
                 metadata_dict = self.metadata_df.iloc[idx].to_dict()
                 results.append({
                     'index': idx,
@@ -78,6 +96,53 @@ class MultimodalSearchEngine:
                     'metadata': metadata_dict
                 })
         return results
+
+def format_results(results: List[dict]) -> str:
+    """Format search results for the prompt"""
+    formatted = []
+    for idx, result in enumerate(results, 1):
+        product = result['metadata']
+        # Extract product title and price from the Text_Description
+        text_desc = product.get('Text_Description', 'N/A')
+        # Split at | to separate title from category and price
+        parts = text_desc.split('|')
+        title = parts[0].strip() if parts else 'N/A'
+        price = parts[-1].strip() if len(parts) > 1 else 'N/A'
+        
+        formatted.append(f"Product {idx}:")
+        formatted.append(f"Title: {title}")
+        formatted.append(f"Price: {price}")
+        formatted.append(f"Similarity Score: {1 - result['distance']:.2f}\n")
+    return "\n".join(formatted)
+
+def display_product_results(results: List[dict]):
+    """Display product results in a grid with images"""
+    cols = st.columns(len(results))
+    for col, result in zip(cols, results):
+        with col:
+            product = result['metadata']
+            
+            # Get the first image URL (split by |)
+            image_urls = product.get('Image_url', '').split('|')
+            main_image_url = image_urls[0] if image_urls else None
+            
+            # Extract title and price from Text_Description
+            text_desc = product.get('Text_Description', '')
+            parts = text_desc.split('|')
+            title = parts[0].strip() if parts else 'N/A'
+            price = parts[-1].strip() if len(parts) > 1 else 'N/A'
+            
+            # Display image
+            if main_image_url:
+                try:
+                    st.image(main_image_url, use_column_width=True)
+                except Exception as e:
+                    st.error(f"Error loading image: {str(e)}")
+            
+            # Display product info
+            st.markdown(f"**{title}**")
+            st.markdown(f"Price: {price}")
+            st.markdown(f"Similarity: {1 - result['distance']:.2%}")
 
 # Page config
 st.set_page_config(
@@ -113,17 +178,6 @@ def initialize_search_engine():
         st.error(f"Error initializing search engine: {str(e)}")
         return None
 
-def format_results(results: List[dict]) -> str:
-    """Format search results for the prompt"""
-    formatted = []
-    for idx, result in enumerate(results, 1):
-        product = result['metadata']
-        formatted.append(f"Product {idx}:")
-        formatted.append(f"Title: {product.get('title', 'N/A')}")
-        formatted.append(f"Description: {product.get('description', 'N/A')}")
-        formatted.append(f"Similarity Score: {1 - result['distance']:.2f}\n")
-    return "\n".join(formatted)
-
 PROMPT_TEMPLATE = """Based on the retrieved product information below, please provide a detailed response to the user's query:
 
 Retrieved Products:
@@ -132,11 +186,13 @@ Retrieved Products:
 User Query: {query}
 
 Guidelines:
-1. Provide specific product details from the retrieved information
-2. Compare relevant features if multiple products are retrieved
-3. Suggest similar alternatives if relevant
-4. Be concise but informative in your response
-"""
+1. Focus on the product features, price, and relevance to the query
+2. Compare prices and features across the retrieved products
+3. Make specific recommendations based on the query
+4. If showing similar products, explain why they're relevant
+5. Include price comparisons when appropriate
+
+Response should be informative but concise, highlighting the most relevant aspects of each product."""
 
 # Main app interface
 st.title("🔍 Multimodal Product Search Assistant")
@@ -225,12 +281,7 @@ else:
                 
                 # Display retrieved products
                 st.subheader("Retrieved Products")
-                cols = st.columns(len(results))
-                for col, result in zip(cols, results):
-                    with col:
-                        product = result['metadata']
-                        st.markdown(f"**{product.get('title', 'N/A')}**")
-                        st.markdown(f"Similarity: {1 - result['distance']:.2%}")
+                display_product_results(results)
                 
                 # Save assistant response
                 st.session_state.messages.append(
