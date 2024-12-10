@@ -36,48 +36,69 @@ class MultimodalSearchEngine:
             # Load text embeddings
             with open(text_path, 'rb') as f:
                 text_embeddings = pickle.load(f)
-                # Convert list to numpy array if needed
-                if isinstance(text_embeddings, list):
-                    text_embeddings = np.array(text_embeddings)
-                # Get embedding dimension
-                if len(text_embeddings.shape) == 1:
-                    # Reshape if it's a 1D array
-                    text_embeddings = text_embeddings.reshape(1, -1)
+                if not isinstance(text_embeddings, np.ndarray):
+                    raise TypeError(f"Text embeddings must be numpy array, got {type(text_embeddings)}")
                 
-                self.text_index = faiss.IndexFlatIP(text_embeddings.shape[1])
+                # Ensure 2D array
+                if text_embeddings.ndim == 1:
+                    text_embeddings = np.expand_dims(text_embeddings, axis=0)
+                elif text_embeddings.ndim > 2:
+                    text_embeddings = text_embeddings.reshape(text_embeddings.shape[0], -1)
+                
+                # Create FAISS index
+                dim = text_embeddings.shape[1]
+                self.text_index = faiss.IndexFlatIP(dim)
                 self.text_index.add(text_embeddings.astype(np.float32))
             
             # Load image embeddings
             with open(image_path, 'rb') as f:
                 image_embeddings = pickle.load(f)
-                # Convert list to numpy array if needed
-                if isinstance(image_embeddings, list):
-                    image_embeddings = np.array(image_embeddings)
-                # Get embedding dimension
-                if len(image_embeddings.shape) == 1:
-                    # Reshape if it's a 1D array
-                    image_embeddings = image_embeddings.reshape(1, -1)
+                if not isinstance(image_embeddings, np.ndarray):
+                    raise TypeError(f"Image embeddings must be numpy array, got {type(image_embeddings)}")
                 
-                self.image_index = faiss.IndexFlatIP(image_embeddings.shape[1])
+                # Ensure 2D array
+                if image_embeddings.ndim == 1:
+                    image_embeddings = np.expand_dims(image_embeddings, axis=0)
+                elif image_embeddings.ndim > 2:
+                    image_embeddings = image_embeddings.reshape(image_embeddings.shape[0], -1)
+                
+                # Create FAISS index
+                dim = image_embeddings.shape[1]
+                self.image_index = faiss.IndexFlatIP(dim)
                 self.image_index.add(image_embeddings.astype(np.float32))
             
             # Load metadata CSV
             self.metadata_df = pd.read_csv(metadata_path)
             
-            # Verify that we have metadata for all embeddings
+            # Print debug information
+            st.write("Debug Information:")
+            st.write(f"Text embeddings shape: {text_embeddings.shape}")
+            st.write(f"Image embeddings shape: {image_embeddings.shape}")
+            st.write(f"Metadata length: {len(self.metadata_df)}")
+            
+            # Verify dimensions match
             if len(self.metadata_df) != text_embeddings.shape[0]:
                 st.warning(f"Warning: Mismatch between embeddings ({text_embeddings.shape[0]}) and metadata ({len(self.metadata_df)}) length")
-                
+            
+            return True
+            
         except Exception as e:
-            st.error(f"Detailed error: {str(e)}")
-            # Print shapes for debugging
-            st.write("Text embeddings type:", type(text_embeddings))
-            if isinstance(text_embeddings, np.ndarray):
-                st.write("Text embeddings shape:", text_embeddings.shape)
-            st.write("Image embeddings type:", type(image_embeddings))
-            if isinstance(image_embeddings, np.ndarray):
-                st.write("Image embeddings shape:", image_embeddings.shape)
-            raise Exception(f"Error loading data: {str(e)}")
+            st.error(f"Error loading data: {str(e)}")
+            if 'text_embeddings' in locals():
+                st.write("Text embeddings info:")
+                st.write(f"Type: {type(text_embeddings)}")
+                if isinstance(text_embeddings, np.ndarray):
+                    st.write(f"Shape: {text_embeddings.shape}")
+                    st.write(f"DTtype: {text_embeddings.dtype}")
+            if 'image_embeddings' in locals():
+                st.write("Image embeddings info:")
+                st.write(f"Type: {type(image_embeddings)}")
+                if isinstance(image_embeddings, np.ndarray):
+                    st.write(f"Shape: {image_embeddings.shape}")
+                    st.write(f"DTtype: {image_embeddings.dtype}")
+            raise
+
+    
     def search(self, query_embedding: np.ndarray, k: int = 3, mode: str = 'text') -> List[dict]:
         """Search for similar items using either text or image index"""
         # Normalize query embedding
