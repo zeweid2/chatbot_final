@@ -8,7 +8,7 @@ Pillow>=10.0.0
 torch>=2.0.0
 transformers>=4.37.0
 faiss-cpu>=1.7.4
-
+sentence-transformers
 # LangChain and OpenAI
 langchain>=0.1.0
 langchain-openai>=0.0.5
